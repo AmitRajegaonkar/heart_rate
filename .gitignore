@@ -1,0 +1,65 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PlatformIO & Embedded Builds
+.pio/
+.pioenvs/
+.piolibdeps/
+compile_commands.json
+
+# Environment variables & secrets
+.env
+.env.local
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+
+# IDE & Editor files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating System files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini

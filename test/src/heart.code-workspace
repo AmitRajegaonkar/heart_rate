@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"name": "led",
+			"path": "../../../../Pictures/OneDrive/文档/PlatformIO/Projects/led"
+		},
+		{
+			"name": "test",
+			"path": ".."
+		}
+	],
+	"settings": {}
+}
