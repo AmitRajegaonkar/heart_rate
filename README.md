@@ -10,7 +10,7 @@ heart/
 ├── pulse_monitor.py        ← Python desktop GUI (run this to view live data)
 ├── requirements.txt        ← Python dependencies
 ├── README.md               ← This file
-└── test/                   ← PlatformIO ESP32 firmware project
+└── heart/                   ← PlatformIO ESP32 firmware project
     ├── platformio.ini      ← Board & library config
     └── src/
         └── main.cpp        ← ESP32 firmware (reads MAX30102, sends over USB)
@@ -45,7 +45,7 @@ Keep wire length **under 30 cm** between sensor and ESP32.
 
 1. In VS Code, click the **PlatformIO Home** icon (ant icon in sidebar)
 2. Click **Open Project**
-3. Browse to `c:\Users\amitr\Desktop\heart\test` → Click **Open**
+3. Browse to `c:\Users\amitr\Desktop\heart\heart` → Click **Open**
 
 ### Step 3 — Install the Library
 
