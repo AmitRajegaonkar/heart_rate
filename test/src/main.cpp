@@ -34,6 +34,42 @@ WebServer server(80);
 WiFiClient sseClient;
 bool       sseActive = false;
 
+// ── Medical PPG DSP Filters (High-Pass DC Blocker + 2-Stage Low-Pass) ──────
+struct PPGFilter {
+  float dcAlpha; // DC blocker coefficient (~0.94 for ~0.4 Hz high-pass at 25Hz)
+  float lpAlpha; // Low-pass coefficient (~0.45 for ~4.0 Hz low-pass at 25Hz)
+  float w;
+  float lp1;
+  float lp2;
+
+  void init(float highPassCutoffAlpha = 0.94f, float lowPassAlpha = 0.45f) {
+    dcAlpha = highPassCutoffAlpha;
+    lpAlpha = lowPassAlpha;
+    reset();
+  }
+
+  float process(float x) {
+    // 1. DC-Removal (High-Pass Filter removes slow breathing baseline wander)
+    float curr_w = x + dcAlpha * w;
+    float hp = curr_w - w;
+    w = curr_w;
+
+    // 2. Cascaded 2-Stage Low-Pass (Removes muscle tremors & 50/60Hz noise)
+    lp1 = lp1 * (1.0f - lpAlpha) + hp * lpAlpha;
+    lp2 = lp2 * (1.0f - lpAlpha) + lp1 * lpAlpha;
+    return lp2;
+  }
+
+  void reset() {
+    w   = 0.0f;
+    lp1 = 0.0f;
+    lp2 = 0.0f;
+  }
+};
+
+PPGFilter irFilter;
+PPGFilter redFilter;
+
 // Heart Rate
 const byte RATE_SIZE = 6;
 byte  rates[RATE_SIZE];
@@ -41,7 +77,7 @@ byte  rateSpot = 0;
 long  lastBeat = 0;
 int   beatAvg  = 0;
 
-// DSP filter states
+// DC levels for SpO2 & contact tracking
 double irDC  = 0, redDC = 0;
 double filteredIR = 0, filteredRed = 0;
 
@@ -76,7 +112,10 @@ void handleRoot() {
 void setup() {
   Serial.begin(115200);
   delay(400);
-  Serial.println("\n=== Dual Mode: USB + Wi-Fi ===");
+  Serial.println("\n=== Dual Mode: USB + Wi-Fi (Stabilized Baseline) ===");
+
+  irFilter.init(0.94f, 0.45f);
+  redFilter.init(0.94f, 0.45f);
 
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);
@@ -89,9 +128,8 @@ void setup() {
   // ── NECK / CAROTID optimised settings ─────────────────────────────────
   // 0x3F (~12mA) is correct for neck — thick tissue absorbs most IR light
   // so irDC stays in 15,000–50,000 range (well below ADC ceiling of 262143).
-  // Do NOT use this on fingertip — finger is transparent and will saturate!
   // Sample average = 8  → smooths out neck muscle motion artefacts
-  // Sample rate   = 200 Hz → cleaner signal per sample at lower rate
+  // Sample rate   = 200 Hz → effective FIFO rate = 25 Hz
   // Pulse width   = 411 us → maximum integration = best SNR for weak signal
   particleSensor.setup(0x3F, 8, 2, 200, 411, 4096);
   particleSensor.setPulseAmplitudeRed(0x3F);  // ~12 mA Red
@@ -133,14 +171,14 @@ void loop() {
     particleSensor.nextSample();
 
     if (irRaw > CONTACT_THRESHOLD) {
-      irDC  = irDC  * 0.95 + irRaw  * 0.05;
-      redDC = redDC * 0.95 + redRaw * 0.05;
+      // Slow exponential moving average for DC baseline (used for SpO2 & contact)
+      // Slow time constant (~3s) so it does NOT follow or distort individual heart pulses
+      irDC  = irDC  * 0.985 + (double)irRaw  * 0.015;
+      redDC = redDC * 0.985 + (double)redRaw * 0.015;
 
-      float acIR  = irRaw  - irDC;
-      float acRed = redRaw - redDC;
-
-      filteredIR  = filteredIR  * 0.5 + acIR  * 0.5;
-      filteredRed = filteredRed * 0.5 + acRed * 0.5;
+      // Apply High-Pass (DC Blocker) + 2-Stage Low-Pass Filter
+      filteredIR  = irFilter.process((float)irRaw);
+      filteredRed = redFilter.process((float)redRaw);
 
       if (redRaw < minRed) minRed = redRaw;
       if (redRaw > maxRed) maxRed = redRaw;
@@ -169,6 +207,8 @@ void loop() {
         beatAvg = 0; lastBeat = 0; spo2Val = 0;
         irDC = 0; redDC = 0;
         filteredIR = 0; filteredRed = 0;
+        irFilter.reset();
+        redFilter.reset();
         for (byte i = 0; i < RATE_SIZE; i++) rates[i] = 0;
       }
     }
@@ -224,3 +264,4 @@ void loop() {
     }
   }
 }
+

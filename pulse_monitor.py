@@ -138,6 +138,8 @@ class PulseMonitor(tk.Tk):
         self._recording  = False
         self._csv_file   = None
         self._csv_writer = None
+        self._py_dc      = 0.0
+        self._curr_ymax  = 200.0
 
         available = list(tkfont.families())
         self._fn = next((f for f in ("Segoe UI", "Inter", "Arial") if f in available),
@@ -156,7 +158,7 @@ class PulseMonitor(tk.Tk):
                  font=(self._fn, 9, "bold"), padx=6).pack(side="left", padx=16, pady=14)
         tk.Label(top, text="Pulse Oximetry and Waveform", bg=C_CARD, fg=C_TEXT,
                  font=(self._fn, 14, "bold")).pack(side="left", padx=8)
-        tk.Label(top, text="MAX30102 · ESP32", bg=C_CARD, fg=C_MUTED,
+        tk.Label(top, text="MAX30102 · ESP32 · Stabilized", bg=C_CARD, fg=C_MUTED,
                  font=(self._fn, 10)).pack(side="right", padx=16)
 
         # Mode selector bar
@@ -190,8 +192,8 @@ class PulseMonitor(tk.Tk):
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("D.TCombobox", fieldbackground=C_CARD, background=C_CARD,
-                        foreground=C_TEXT, selectbackground=C_CARD,
-                        selectforeground=C_TEXT, arrowcolor=C_BLUE)
+                         foreground=C_TEXT, selectbackground=C_CARD,
+                         selectforeground=C_TEXT, arrowcolor=C_BLUE)
         self._port_combo = ttk.Combobox(self._serial_frame, textvariable=self._port_var,
                                          width=10, style="D.TCombobox", state="readonly",
                                          font=(self._fn, 11))
@@ -235,35 +237,45 @@ class PulseMonitor(tk.Tk):
         # Metric cards
         cards = tk.Frame(self, bg=C_BG)
         cards.pack(fill="x", padx=16, pady=(14, 0))
-        self._bpm_var   = tk.StringVar(value="--")
-        self._spo2_var  = tk.StringVar(value="--")
-        self._pulse_var = tk.StringVar(value="No Contact")
-        self._make_card(cards, "HEART RATE",   self._bpm_var,   "BPM",    C_RED,  0)
-        self._make_card(cards, "BLOOD OXYGEN", self._spo2_var,  "% SpO2", C_TEAL, 1)
-        self._make_card(cards, "PULSE SIGNAL", self._pulse_var, "",       C_BLUE, 2)
+        self._bpm_var     = tk.StringVar(value="--")
+        self._spo2_var    = tk.StringVar(value="--")
+        self._pulse_var   = tk.StringVar(value="No Contact")
+        self._quality_var = tk.StringVar(value="--")
+        self._make_card(cards, "HEART RATE",     self._bpm_var,     "BPM",    C_RED,   0)
+        self._make_card(cards, "BLOOD OXYGEN",   self._spo2_var,    "% SpO2", C_TEAL,  1)
+        self._make_card(cards, "PULSE SIGNAL",   self._pulse_var,   "",       C_BLUE,  2)
+        self._make_card(cards, "SIGNAL QUALITY", self._quality_var, "",       C_GREEN, 3)
         cards.columnconfigure(0, weight=1)
         cards.columnconfigure(1, weight=1)
         cards.columnconfigure(2, weight=1)
+        cards.columnconfigure(3, weight=1)
 
         # Chart
         cf = tk.Frame(self, bg=C_CARD)
         cf.pack(fill="both", expand=True, padx=16, pady=14)
-        tk.Label(cf, text="PPG Pulse Waveform", bg=C_CARD, fg=C_MUTED,
-                 font=(self._fn, 10, "bold")).pack(anchor="nw", padx=12, pady=(8, 0))
+
+        chart_hdr = tk.Frame(cf, bg=C_CARD)
+        chart_hdr.pack(fill="x", padx=12, pady=(8, 0))
+        tk.Label(chart_hdr, text="PPG Pulse Waveform (Zero-Centered Baseline)", bg=C_CARD, fg=C_MUTED,
+                 font=(self._fn, 10, "bold")).pack(side="left")
+        self._baseline_status_lbl = tk.Label(chart_hdr, text="● Baseline: Locked", bg=C_CARD, fg=C_GREEN,
+                                             font=(self._fn, 9, "bold"))
+        self._baseline_status_lbl.pack(side="right")
 
         self._fig, self._ax = plt.subplots(figsize=(9, 3.2))
         self._fig.patch.set_facecolor(C_CARD)
         self._ax.set_facecolor("#111827")
         xs = list(range(MAX_POINTS))
         self._line, = self._ax.plot(xs, self._wave_buf, color=C_WAVE, linewidth=2.2)
+        self._zero_line = self._ax.axhline(0, color="#475569", linestyle="--", linewidth=1.2, alpha=0.75)
         self._ax.set_xlim(0, MAX_POINTS - 1)
-        self._ax.set_ylim(-500, 500)
+        self._ax.set_ylim(-self._curr_ymax, self._curr_ymax)
         self._ax.tick_params(colors=C_MUTED, labelsize=9)
         for sp in self._ax.spines.values():
             sp.set_edgecolor(C_BORDER)
-        self._ax.set_xlabel("Time", color=C_MUTED, fontsize=9)
-        self._ax.set_ylabel("AC Signal", color=C_MUTED, fontsize=9)
-        self._ax.grid(True, color="#1e3352", linewidth=0.6, linestyle="--")
+        self._ax.set_xlabel("Samples", color=C_MUTED, fontsize=9)
+        self._ax.set_ylabel("Pulsatile Amplitude (AC)", color=C_MUTED, fontsize=9)
+        self._ax.grid(True, color="#1e3352", linewidth=0.6, linestyle=":")
         self._fig.tight_layout(pad=1.6)
 
         canvas = FigureCanvasTkAgg(self._fig, master=cf)
@@ -283,7 +295,7 @@ class PulseMonitor(tk.Tk):
         row = tk.Frame(card, bg=C_CARD)
         row.pack(anchor="w", padx=12, pady=(0, 10))
         tk.Label(row, textvariable=var, bg=C_CARD, fg=accent,
-                 font=(self._fn, 42, "bold")).pack(side="left")
+                 font=(self._fn, 40, "bold")).pack(side="left")
         if unit:
             tk.Label(row, text=unit, bg=C_CARD, fg=C_MUTED,
                      font=(self._fn, 12)).pack(side="left", padx=(6, 0), pady=(16, 0))
@@ -353,6 +365,8 @@ class PulseMonitor(tk.Tk):
         self._bpm_var.set("--")
         self._spo2_var.set("--")
         self._pulse_var.set("No Contact")
+        self._quality_var.set("--")
+        self._baseline_status_lbl.configure(text="● Disconnected", fg=C_MUTED)
         self._stop_recording()
 
     # ── CSV Recording ──────────────────────────────────────────────────────
@@ -397,17 +411,40 @@ class PulseMonitor(tk.Tk):
                 item = self._data_q.get_nowait()
                 if item[0] == "data":
                     _, wave, bpm, spo2, ir_dc = item
+                    
+                    # Leaky integrator DC offset removal for guaranteed zero baseline
+                    if ir_dc > 10000:
+                        self._py_dc = self._py_dc * 0.96 + wave * 0.04
+                        stable_wave = wave - self._py_dc
+                    else:
+                        self._py_dc = 0.0
+                        stable_wave = 0.0
+
                     self._wave_buf.pop(0)
-                    self._wave_buf.append(wave)
+                    self._wave_buf.append(stable_wave)
+                    
                     nc = ir_dc < 10000
                     self._bpm_var.set("--" if (nc or bpm < 30) else str(bpm))
                     self._spo2_var.set("--" if (nc or spo2 < 70) else str(spo2))
-                    self._pulse_var.set("No Contact" if nc else
-                                        ("Active Pulse" if bpm > 0 else "Detecting..."))
+                    
+                    if nc:
+                        self._pulse_var.set("No Contact")
+                        self._quality_var.set("No Contact")
+                        self._baseline_status_lbl.configure(text="● No Sensor Contact", fg=C_MUTED)
+                    else:
+                        self._pulse_var.set("Active Pulse" if bpm > 0 else "Detecting...")
+                        recent_amp = max(abs(x) for x in self._wave_buf[-30:])
+                        if recent_amp > 15:
+                            self._quality_var.set("Stable")
+                            self._baseline_status_lbl.configure(text="● Baseline: Locked & Stable", fg=C_GREEN)
+                        else:
+                            self._quality_var.set("Weak Pulse")
+                            self._baseline_status_lbl.configure(text="● Baseline: Centered", fg=C_BLUE)
+
                     # Write to CSV if recording
                     if self._recording and self._csv_writer:
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                        self._csv_writer.writerow([ts, round(wave, 2), bpm, spo2, int(ir_dc)])
+                        self._csv_writer.writerow([ts, round(stable_wave, 2), bpm, spo2, int(ir_dc)])
                 elif item[0] == "error":
                     self._set_status(item[1], C_RED)
                     self._connected = False
@@ -422,9 +459,20 @@ class PulseMonitor(tk.Tk):
         ys = list(self._wave_buf)
         xs = list(range(len(ys)))
         self._line.set_data(xs, ys)
-        mn, mx = min(ys), max(ys)
-        pad = max(abs(mx - mn) * 0.25, 60)
-        self._ax.set_ylim(mn - pad, mx + pad)
+        
+        # Symmetrical envelope follower centered at Y=0
+        peak = max(max(abs(y) for y in ys), 40.0)
+        target_max = peak * 1.35
+        
+        # Smooth transition to avoid jumping/jittering
+        if target_max > self._curr_ymax:
+            self._curr_ymax = self._curr_ymax * 0.75 + target_max * 0.25
+        else:
+            self._curr_ymax = self._curr_ymax * 0.95 + target_max * 0.05
+            
+        self._curr_ymax = max(self._curr_ymax, 60.0)
+        self._ax.set_ylim(-self._curr_ymax, self._curr_ymax)
+        
         for c in self._ax.collections:
             c.remove()
         self._ax.fill_between(xs, ys, alpha=0.13, color=C_WAVE)
@@ -442,3 +490,4 @@ if __name__ == "__main__":
     app = PulseMonitor()
     app.protocol("WM_DELETE_WINDOW", app.on_close)
     app.mainloop()
+
