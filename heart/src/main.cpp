@@ -1,9 +1,8 @@
 /*
- * ESP32 + MAX30102 — Dual Mode: USB Serial + Wi-Fi SSE
- * -----------------------------------------------------
- * Streams DATA: over USB (for Python app via Serial)
- * AND serves live waveform via Wi-Fi SSE at http://<IP>/events
- * (for Python app via Wi-Fi, or any browser)
+ * ESP32 + MAX30102 — Dual Mode: USB Serial + Wi-Fi SSE (Text Output Mode)
+ * ------------------------------------------------------------------------
+ * Streams human-readable text over USB Serial
+ * AND serves live text stream via Wi-Fi SSE at http://<IP>/events
  *
  * Wiring:
  *   VIN  → 3.3 V   SDA → GPIO 21   SCL → GPIO 22   GND → GND
@@ -231,19 +230,28 @@ void loop() {
     }
   }
 
-  // Send data every 20ms — both USB Serial and Wi-Fi SSE
+  // Send data every 100ms in readable text format — both USB Serial and Wi-Fi SSE
   static unsigned long lastSend = 0;
-  if (millis() - lastSend >= 20) {
+  if (millis() - lastSend >= 100) {
     lastSend = millis();
 
-    // Format: DATA:wave,bpm,spo2,irDC
-    String payload = String(filteredIR, 1) + "," +
-                     String(beatAvg)       + "," +
-                     String((int)spo2Val)  + "," +
-                     String((long)irDC);
+    String bpmStr  = (beatAvg > 0) ? (String(beatAvg) + " BPM") : "--";
+    String spo2Str = (spo2Val > 0) ? (String((int)spo2Val) + " %") : "--";
+    String waveStr = String(filteredIR, 1);
+    String irStr   = String((long)irDC);
+
+    String payload;
+    if (irDC >= CONTACT_THRESHOLD) {
+      payload = "Heart Rate: " + bpmStr +
+                " | SpO2: " + spo2Str +
+                " | Wave: " + waveStr +
+                " | IR DC: " + irStr;
+    } else {
+      payload = "Status: No Contact | Heart Rate: -- | SpO2: -- | IR DC: " + irStr;
+    }
 
     // USB Serial
-    Serial.print("DATA:"); Serial.println(payload);
+    Serial.println(payload);
 
     // Wi-Fi SSE
     if (sseActive && sseClient.connected()) {

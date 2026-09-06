@@ -13,6 +13,7 @@ import queue
 import time
 import csv
 import os
+import re
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, font as tkfont
@@ -34,6 +35,8 @@ except ImportError:
 BAUD_RATE  = 115200
 MAX_POINTS = 180
 UPDATE_MS  = 30
+Y_MIN      = -150
+Y_MAX      = 150
 
 C_BG    = "#0f172a"
 C_CARD  = "#1e293b"
@@ -43,7 +46,7 @@ C_TEAL  = "#14b8a6"
 C_BLUE  = "#38bdf8"
 C_MUTED = "#64748b"
 C_TEXT  = "#f1f5f9"
-C_WAVE  = "#38bdf8"
+C_WAVE  = "#0284c7"
 C_GREEN = "#10b981"
 
 
@@ -66,8 +69,8 @@ class SerialReader(threading.Thread):
             self.ser.reset_input_buffer()
             while not self._stop.is_set():
                 raw = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                if raw.startswith("DATA:"):
-                    _parse_and_enqueue(raw[5:], self.q)
+                if raw:
+                    _parse_and_enqueue(raw, self.q)
         except Exception as e:
             self.q.put(("error", str(e)))
 
@@ -98,6 +101,8 @@ class WiFiReader(threading.Thread):
                         break
                     if line.startswith("data:"):
                         _parse_and_enqueue(line[5:].strip(), self.q)
+                    elif line.strip():
+                        _parse_and_enqueue(line.strip(), self.q)
         except requests.exceptions.ConnectionError:
             self.q.put(("error", f"Cannot reach {url} — check IP and Wi-Fi"))
         except Exception as e:
@@ -108,16 +113,55 @@ class WiFiReader(threading.Thread):
 
 
 def _parse_and_enqueue(payload, q):
-    parts = payload.split(",")
-    if len(parts) == 4:
-        try:
-            wave  = float(parts[0])
-            bpm   = int(parts[1])
-            spo2  = int(parts[2])
-            ir_dc = float(parts[3])
+    # Support CSV format (e.g. DATA:12.3,75,98,45231 or 12.3,75,98,45231)
+    clean = payload[5:].strip() if payload.startswith("DATA:") else payload.strip()
+    if "," in clean and "Heart Rate" not in clean and "Wave" not in clean:
+        parts = clean.split(",")
+        if len(parts) == 4:
+            try:
+                wave  = float(parts[0])
+                bpm   = int(parts[1])
+                spo2  = int(parts[2])
+                ir_dc = float(parts[3])
+                q.put(("data", wave, bpm, spo2, ir_dc))
+                return
+            except ValueError:
+                pass
+
+    # Support human-readable text format
+    # Example: "Heart Rate: 75 BPM | SpO2: 98 % | Wave: 12.3 | IR DC: 45231"
+    # Example: "Status: No Contact | Heart Rate: -- | SpO2: -- | IR DC: 1420"
+    try:
+        wave = 0.0
+        bpm = 0
+        spo2 = 0
+        ir_dc = 0.0
+        matched = False
+
+        m_wave = re.search(r"Wave:\s*([-\d\.]+)", payload)
+        if m_wave:
+            wave = float(m_wave.group(1))
+            matched = True
+
+        m_bpm = re.search(r"Heart Rate:\s*(\d+)", payload)
+        if m_bpm:
+            bpm = int(m_bpm.group(1))
+            matched = True
+
+        m_spo2 = re.search(r"SpO2:\s*(\d+)", payload)
+        if m_spo2:
+            spo2 = int(m_spo2.group(1))
+            matched = True
+
+        m_ir = re.search(r"IR DC:\s*(\d+)", payload)
+        if m_ir:
+            ir_dc = float(m_ir.group(1))
+            matched = True
+
+        if matched:
             q.put(("data", wave, bpm, spo2, ir_dc))
-        except ValueError:
-            pass
+    except Exception:
+        pass
 
 
 # ── Main GUI ───────────────────────────────────────────────────────────────
@@ -135,11 +179,10 @@ class PulseMonitor(tk.Tk):
         self._reader     = None
         self._data_q     = queue.Queue()
         self._mode       = tk.StringVar(value="serial")  # "serial" or "wifi"
-        self._recording  = False
-        self._csv_file   = None
-        self._csv_writer = None
-        self._py_dc      = 0.0
-        self._curr_ymax  = 200.0
+        self._recording   = False
+        self._log_file    = None
+        self._current_txt = None
+        self._py_dc       = 0.0
 
         available = list(tkfont.families())
         self._fn = next((f for f in ("Segoe UI", "Inter", "Arial") if f in available),
@@ -263,19 +306,20 @@ class PulseMonitor(tk.Tk):
         self._baseline_status_lbl.pack(side="right")
 
         self._fig, self._ax = plt.subplots(figsize=(9, 3.2))
-        self._fig.patch.set_facecolor(C_CARD)
-        self._ax.set_facecolor("#111827")
+        self._fig.patch.set_facecolor("#ffffff")
+        self._ax.set_facecolor("#ffffff")
         xs = list(range(MAX_POINTS))
-        self._line, = self._ax.plot(xs, self._wave_buf, color=C_WAVE, linewidth=2.2)
-        self._zero_line = self._ax.axhline(0, color="#475569", linestyle="--", linewidth=1.2, alpha=0.75)
+        self._line, = self._ax.plot(xs, self._wave_buf, color=C_WAVE, linewidth=2.0)
+        self._zero_line = self._ax.axhline(0, color="#64748b", linestyle="--", linewidth=1.2, alpha=0.85)
         self._ax.set_xlim(0, MAX_POINTS - 1)
-        self._ax.set_ylim(-self._curr_ymax, self._curr_ymax)
-        self._ax.tick_params(colors=C_MUTED, labelsize=9)
+        self._ax.set_ylim(Y_MIN, Y_MAX)
+        self._ax.set_yticks([-150, -100, -50, 0, 50, 100, 150])
+        self._ax.tick_params(colors="#475569", labelsize=9)
         for sp in self._ax.spines.values():
-            sp.set_edgecolor(C_BORDER)
-        self._ax.set_xlabel("Samples", color=C_MUTED, fontsize=9)
-        self._ax.set_ylabel("Pulsatile Amplitude (AC)", color=C_MUTED, fontsize=9)
-        self._ax.grid(True, color="#1e3352", linewidth=0.6, linestyle=":")
+            sp.set_edgecolor("#cbd5e1")
+        self._ax.set_xlabel("Samples", color="#64748b", fontsize=9)
+        self._ax.set_ylabel("Pulsatile Amplitude (AC)", color="#64748b", fontsize=9)
+        self._ax.grid(True, color="#f1f5f9", linewidth=0.8, linestyle=":")
         self._fig.tight_layout(pad=1.6)
 
         canvas = FigureCanvasTkAgg(self._fig, master=cf)
@@ -369,7 +413,7 @@ class PulseMonitor(tk.Tk):
         self._baseline_status_lbl.configure(text="● Disconnected", fg=C_MUTED)
         self._stop_recording()
 
-    # ── CSV Recording ──────────────────────────────────────────────────────
+    # ── Text Recording ──────────────────────────────────────────────────────
     def _toggle_record(self):
         if self._recording:
             self._stop_recording()
@@ -379,26 +423,33 @@ class PulseMonitor(tk.Tk):
     def _start_recording(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         folder = os.path.dirname(os.path.abspath(__file__))
-        filename = os.path.join(folder, f"ppg_{timestamp}.csv")
-        self._csv_file   = open(filename, "w", newline="")
-        self._csv_writer = csv.writer(self._csv_file)
-        self._csv_writer.writerow(["timestamp", "wave", "bpm", "spo2", "irDC"])
-        self._recording  = True
+        filename = os.path.join(folder, f"ppg_{timestamp}.txt")
+        self._log_file = open(filename, "w", encoding="utf-8")
+        self._log_file.write("================================================================================\n")
+        self._log_file.write("                    CLINICAL PULSE MONITOR - DATA LOG\n")
+        self._log_file.write(f"                    Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        self._log_file.write("================================================================================\n")
+        self._log_file.write("Timestamp                   Heart Rate     SpO2       Wave Amplitude     IR DC Baseline\n")
+        self._log_file.write("--------------------------------------------------------------------------------\n")
+        self._log_file.flush()
+        self._recording   = True
+        self._current_txt = filename
         self._rec_btn.configure(text="⏹ Stop", bg="#7f1d1d", fg=C_TEXT,
                                  activebackground="#991b1b")
         self._set_status(f"Recording → {os.path.basename(filename)}", C_RED)
-        self._current_csv = filename
 
     def _stop_recording(self):
-        if self._csv_file:
-            self._csv_file.close()
-            self._csv_file   = None
-            self._csv_writer = None
+        if self._log_file:
+            self._log_file.write("--------------------------------------------------------------------------------\n")
+            self._log_file.write(f"Session ended at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self._log_file.write("================================================================================\n")
+            self._log_file.close()
+            self._log_file = None
         if self._recording:
             self._recording = False
             self._rec_btn.configure(text="⏺ Record", bg="#1e293b", fg=C_MUTED,
                                      activebackground="#7f1d1d")
-            self._set_status(f"Saved: {os.path.basename(self._current_csv)}", C_GREEN)
+            self._set_status(f"Saved: {os.path.basename(self._current_txt)}", C_GREEN)
 
     def _set_status(self, msg, color):
         self._status_lbl.configure(text=msg, fg=color)
@@ -441,10 +492,17 @@ class PulseMonitor(tk.Tk):
                             self._quality_var.set("Weak Pulse")
                             self._baseline_status_lbl.configure(text="● Baseline: Centered", fg=C_BLUE)
 
-                    # Write to CSV if recording
-                    if self._recording and self._csv_writer:
+                    # Write to text log if recording
+                    if self._recording and self._log_file:
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                        self._csv_writer.writerow([ts, round(stable_wave, 2), bpm, spo2, int(ir_dc)])
+                        if nc:
+                            line = f"[{ts}] Status: No Contact       | Heart Rate: --      | SpO2: --    | IR DC: {int(ir_dc)}\n"
+                        else:
+                            bpm_str = f"{bpm} BPM" if bpm > 0 else "--"
+                            spo2_str = f"{spo2} %" if spo2 > 0 else "--"
+                            line = f"[{ts}] Heart Rate: {bpm_str:<8} | SpO2: {spo2_str:<6} | Wave: {round(stable_wave, 2):>7.2f} | IR DC: {int(ir_dc)}\n"
+                        self._log_file.write(line)
+                        self._log_file.flush()
                 elif item[0] == "error":
                     self._set_status(item[1], C_RED)
                     self._connected = False
@@ -459,23 +517,8 @@ class PulseMonitor(tk.Tk):
         ys = list(self._wave_buf)
         xs = list(range(len(ys)))
         self._line.set_data(xs, ys)
-        
-        # Symmetrical envelope follower centered at Y=0
-        peak = max(max(abs(y) for y in ys), 40.0)
-        target_max = peak * 1.35
-        
-        # Smooth transition to avoid jumping/jittering
-        if target_max > self._curr_ymax:
-            self._curr_ymax = self._curr_ymax * 0.75 + target_max * 0.25
-        else:
-            self._curr_ymax = self._curr_ymax * 0.95 + target_max * 0.05
-            
-        self._curr_ymax = max(self._curr_ymax, 60.0)
-        self._ax.set_ylim(-self._curr_ymax, self._curr_ymax)
-        
-        for c in self._ax.collections:
+        for c in list(self._ax.collections):
             c.remove()
-        self._ax.fill_between(xs, ys, alpha=0.13, color=C_WAVE)
         return (self._line,)
 
     def on_close(self):

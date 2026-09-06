@@ -63,3 +63,8 @@ compile_commands.json
 Thumbs.db
 ehthumbs.db
 [Dd]esktop.ini
+
+# Recorded Sensor Data Logs
+*.csv
+*.txt
+!requirements.txt
