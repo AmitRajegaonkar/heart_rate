@@ -51,6 +51,21 @@ Keep wire length **under 30 cm** between sensor and ESP32.
 
 PlatformIO will automatically install the **SparkFun MAX3010x** library listed in `platformio.ini` on first build. No manual steps needed.
 
+### Step 3b — Configure Wi-Fi Credentials (Optional for Wireless Mode)
+
+If you plan to stream live data wirelessly over Wi-Fi:
+1. Open [`heart/src/main.cpp`](file:///c:/Users/amitr/Desktop/heart/heart/src/main.cpp)
+2. Locate lines 20–21:
+   ```cpp
+   // ── Wi-Fi credentials ──────────────────────────────────────────────────────
+   const char* WIFI_SSID = "YOUR_WIFI_SSID";
+   const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+   ```
+3. Replace `"YOUR_WIFI_SSID"` and `"YOUR_WIFI_PASSWORD"` with your 2.4 GHz Wi-Fi router or mobile hotspot details.
+4. Save the file (`Ctrl+S`).
+
+> ℹ️ *Note: ESP32 only connects to **2.4 GHz** Wi-Fi networks (not 5 GHz).*
+
 ### Step 4 — Build the Firmware
 
 - Click the **✓ Build** button (bottom toolbar) or press `Ctrl+Alt+B`
@@ -68,16 +83,16 @@ PlatformIO will automatically install the **SparkFun MAX3010x** library listed i
 
 - Click the **🔌 Serial Monitor** icon in PlatformIO
 - Set baud rate to **115200**
-- Place finger on sensor — you should see:
+- You should see:
+  ```text
+  === ESP32 Pulse Monitor (Text Mode) ===
+  Connecting to Wi-Fi.....
+  Wi-Fi connected! IP: 192.168.1.150
+  >>> Python Wi-Fi URL: http://192.168.1.150/events <<<
+  Heart Rate: 72 BPM | SpO2: 98 % | Wave: 12.3 | IR DC: 45231
   ```
-  === USB Pulse Monitor Ready ===
-  Sensor OK — streaming DATA: to Python app
-  DATA:12.3,0,0,45231
-  Beat! BPM=73.2
-  DATA:22.1,73,97,46500
-  ```
-- ✅ If you see `DATA:` lines → firmware is working
-- ❌ Close Serial Monitor before running Python app (they share the same COM port)
+- ✅ Note the **IP address** printed (e.g. `192.168.1.150`) if you wish to use Wi-Fi mode.
+- ❌ **Important:** Close the PlatformIO Serial Monitor before opening the Python app when using USB mode.
 
 ---
 
@@ -129,7 +144,7 @@ pip install -r requirements.txt
 
 Expected output:
 ```
-Successfully installed pyserial-3.5 matplotlib-3.9.2
+Successfully installed pyserial-3.5 matplotlib-3.9.2 requests-2.32.3
 ```
 
 ### Step 4 — Run the Dashboard
@@ -142,22 +157,30 @@ python pulse_monitor.py
 
 ## 🖥️ Using the Dashboard
 
-1. A GUI window opens
-2. Select your **COM port** from the dropdown (e.g. `COM4`)
-   - If unsure: Device Manager → Ports (COM & LPT)
-3. Click **Connect**
-4. Status bar turns green: `Connected - COM4 - 115200 baud`
-5. Place finger firmly (but gently) on the MAX30102 sensor
-6. Wait ~5 seconds for BPM to stabilize
+You can use the dashboard in either **USB Serial Mode** or **Wireless Wi-Fi Mode**:
 
-### Dashboard Readings
+### Mode A: USB Serial Mode (Default)
+1. Select the **USB Serial** radio button.
+2. Choose your **COM Port** from the dropdown (e.g. `COM4` or `COM5`).
+   - If not listed, click **↺** to refresh.
+3. Click **Connect**.
+
+### Mode B: Wireless Wi-Fi Mode
+1. Select the **Wi-Fi** radio button at the top bar.
+2. Enter the **ESP32 IP address** (e.g. `192.168.1.150` — shown in Serial Monitor during ESP32 boot).
+3. Click **Connect** (connects directly to `http://<IP>/events` via SSE).
+
+---
+
+### Dashboard Readings & Features
 
 | Reading | Normal Range | Notes |
 |---|---|---|
-| Heart Rate | 60–100 BPM | Takes 4–5 beats to calculate |
-| Blood Oxygen | 95–100 % | Hold still for accuracy |
-| Pulse Signal | Active Pulse | Shows "No Contact" if finger absent |
-| PPG Waveform | Smooth peaks | Each peak = one heartbeat |
+| Heart Rate | 60–100 BPM | Calculated over recent detected beats |
+| Blood Oxygen | 95–100 % | Hold still for steady reading |
+| Pulse Signal | Active Pulse | Shows "No Contact" if sensor detached |
+| PPG Waveform | Smooth peaks | Starts from the left ($x=0$) on white background |
+| ⏺ Record | Text File Log | Records session with timestamps to `ppg_<timestamp>.txt` |
 
 ---
 
@@ -177,31 +200,29 @@ python pulse_monitor.py
 
 ## 📡 Data Format (For Researchers)
 
-The ESP32 sends one line every 20 ms over USB Serial at 115200 baud:
+The ESP32 sends formatted text over USB Serial (at 115200 baud) and Wi-Fi SSE (`/events`):
 
-```
-DATA:<wave>,<bpm>,<spo2>,<irDC>
+```text
+Heart Rate: <bpm> BPM | SpO2: <spo2> % | Wave: <wave> | IR DC: <irDC>
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `wave` | float | Filtered AC PPG signal (bandpass 0.5–3.5 Hz) |
-| `bpm` | int | Average heart rate over last 4 beats |
-| `spo2` | int | Blood oxygen % (estimated from Red/IR ratio) |
-| `irDC` | long | Raw IR DC baseline (finger contact quality) |
+| `Heart Rate` | int / text | Average heart rate over recent detected beats (`--` if detecting) |
+| `SpO2` | int / text | Blood oxygen % calculated from Red/IR AC/DC ratio |
+| `Wave` | float | Filtered pulsatile PPG AC signal (centered at 0) |
+| `IR DC` | long | IR baseline amplitude (finger/carotid contact quality) |
 
-To log raw data to CSV for offline analysis:
+To log raw data to a text file using Python:
 ```python
-import serial, csv, time
-ser = serial.Serial('COM4', 115200)
-with open('ppg_data.csv', 'w', newline='') as f:
-    w = csv.writer(f)
-    w.writerow(['timestamp', 'wave', 'bpm', 'spo2', 'irDC'])
+import serial, time
+ser = serial.Serial('COM5', 115200)
+with open('ppg_log.txt', 'w', encoding='utf-8') as f:
     while True:
-        line = ser.readline().decode().strip()
-        if line.startswith('DATA:'):
-            parts = line[5:].split(',')
-            w.writerow([time.time()] + parts)
+        line = ser.readline().decode('utf-8', errors='ignore').strip()
+        if line:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}\n")
+            f.flush()
 ```
 
 ---

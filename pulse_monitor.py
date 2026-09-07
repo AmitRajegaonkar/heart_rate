@@ -92,19 +92,26 @@ class WiFiReader(threading.Thread):
         self._stop = threading.Event()
 
     def run(self):
-        url = f"http://{self.ip}/events"
+        raw = self.ip.strip()
+        if not raw.startswith("http://") and not raw.startswith("https://"):
+            raw = "http://" + raw
+        if not raw.endswith("/events"):
+            raw = raw.rstrip("/") + "/events"
+        url = raw
+
         try:
             with requests.get(url, stream=True, timeout=10) as resp:
                 resp.raise_for_status()
                 for line in resp.iter_lines(decode_unicode=True):
                     if self._stop.is_set():
                         break
-                    if line.startswith("data:"):
-                        _parse_and_enqueue(line[5:].strip(), self.q)
-                    elif line.strip():
-                        _parse_and_enqueue(line.strip(), self.q)
+                    if line:
+                        if line.startswith("data:"):
+                            _parse_and_enqueue(line[5:].strip(), self.q)
+                        else:
+                            _parse_and_enqueue(line.strip(), self.q)
         except requests.exceptions.ConnectionError:
-            self.q.put(("error", f"Cannot reach {url} — check IP and Wi-Fi"))
+            self.q.put(("error", f"Cannot reach {url} — check ESP32 IP & Wi-Fi"))
         except Exception as e:
             self.q.put(("error", str(e)))
 
