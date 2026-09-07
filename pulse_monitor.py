@@ -174,7 +174,7 @@ class PulseMonitor(tk.Tk):
         self.configure(bg=C_BG)
         self.resizable(True, True)
 
-        self._wave_buf   = [0.0] * MAX_POINTS
+        self._wave_buf   = []
         self._connected  = False
         self._reader     = None
         self._data_q     = queue.Queue()
@@ -308,8 +308,7 @@ class PulseMonitor(tk.Tk):
         self._fig, self._ax = plt.subplots(figsize=(9, 3.2))
         self._fig.patch.set_facecolor("#ffffff")
         self._ax.set_facecolor("#ffffff")
-        xs = list(range(MAX_POINTS))
-        self._line, = self._ax.plot(xs, self._wave_buf, color=C_WAVE, linewidth=2.0)
+        self._line, = self._ax.plot([], [], color=C_WAVE, linewidth=2.0)
         self._zero_line = self._ax.axhline(0, color="#64748b", linestyle="--", linewidth=1.2, alpha=0.85)
         self._ax.set_xlim(0, MAX_POINTS - 1)
         self._ax.set_ylim(Y_MIN, Y_MAX)
@@ -396,6 +395,8 @@ class PulseMonitor(tk.Tk):
 
         self._reader.start()
         self._connected = True
+        self._wave_buf = []
+        self._py_dc = 0.0
         self._conn_btn.configure(text="Disconnect", bg="#7f1d1d", activebackground="#991b1b")
         self._set_status("Connected — " + label, C_GREEN)
 
@@ -404,6 +405,8 @@ class PulseMonitor(tk.Tk):
             self._reader.stop()
             self._reader = None
         self._connected = False
+        self._wave_buf = []
+        self._py_dc = 0.0
         self._conn_btn.configure(text="Connect", bg="#166534", activebackground="#15803d")
         self._set_status("Disconnected", C_MUTED)
         self._bpm_var.set("--")
@@ -471,8 +474,12 @@ class PulseMonitor(tk.Tk):
                         self._py_dc = 0.0
                         stable_wave = 0.0
 
-                    self._wave_buf.pop(0)
-                    self._wave_buf.append(stable_wave)
+                    # Grow buffer from left-hand side (x=0) until MAX_POINTS, then scroll
+                    if len(self._wave_buf) < MAX_POINTS:
+                        self._wave_buf.append(stable_wave)
+                    else:
+                        self._wave_buf.pop(0)
+                        self._wave_buf.append(stable_wave)
                     
                     nc = ir_dc < 10000
                     self._bpm_var.set("--" if (nc or bpm < 30) else str(bpm))
@@ -484,7 +491,7 @@ class PulseMonitor(tk.Tk):
                         self._baseline_status_lbl.configure(text="● No Sensor Contact", fg=C_MUTED)
                     else:
                         self._pulse_var.set("Active Pulse" if bpm > 0 else "Detecting...")
-                        recent_amp = max(abs(x) for x in self._wave_buf[-30:])
+                        recent_amp = max(abs(x) for x in self._wave_buf[-30:]) if self._wave_buf else 0
                         if recent_amp > 15:
                             self._quality_var.set("Stable")
                             self._baseline_status_lbl.configure(text="● Baseline: Locked & Stable", fg=C_GREEN)
